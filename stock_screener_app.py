@@ -24,7 +24,7 @@ from sop_screener import (
     check_valid_pullback,
     find_breakout_day,
 )
-from twse_fetcher import fetch_twse_ohlcv
+from twse_fetcher import fetch_twse_ohlcv, get_stock_name
 
 st.set_page_config(page_title="選股紀律 SOP 篩選", page_icon="📈", layout="wide")
 
@@ -104,6 +104,7 @@ if run:
             stage1 = check_stage1_filters(df, params)
             row = {
                 "代號": symbol,
+                "名稱": get_stock_name(symbol),
                 "第一關卡通過": stage1["stage1_pass"],
                 "均線多頭": stage1["filter1_trend_up"]["pass"],
                 "量縮沉澱": stage1["filter2_volume_consolidation"]["pass"],
@@ -141,10 +142,10 @@ if st.session_state.screen_result is not None and not st.session_state.screen_re
     # ---- 今日買進訊號：最需要一眼看到的結論，獨立列在最上面 ----
     confirmed_today = result_df[result_df["今日買進訊號"]]
     if not confirmed_today.empty:
-        st.success(
-            "🎯 今天買進時機確立：" + "、".join(confirmed_today["代號"]),
-            icon="🎯",
-        )
+        labels = [
+            f"{row['代號']} {row['名稱']}".strip() for _, row in confirmed_today.iterrows()
+        ]
+        st.success("🎯 今天買進時機確立：" + "、".join(labels), icon="🎯")
     else:
         st.info("目前沒有任何股票在「今天」符合買進時機確立的條件（詳見下方逐檔原因）")
 
@@ -156,8 +157,9 @@ if st.session_state.screen_result is not None and not st.session_state.screen_re
         display_df[col] = display_df[col].map(bool_map)
     display_df["有效回測"] = display_df["有效回測"].map(bool_map).fillna("—")
     display_df["突破日"] = display_df["突破日"].fillna("—")
-    # 把「今日買進訊號」放到代號後面第一眼就看到，其餘欄位當作佐證細節
-    cols = ["代號", "今日買進訊號"] + [c for c in display_df.columns if c not in ("代號", "今日買進訊號")]
+    # 欄位順序：代號、名稱緊接在旁，接著是最需要一眼看到的「今日買進訊號」，其餘當作佐證細節
+    front_cols = ["代號", "名稱", "今日買進訊號"]
+    cols = front_cols + [c for c in display_df.columns if c not in front_cols]
     display_df = display_df[cols]
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -172,7 +174,8 @@ if st.session_state.screen_result is not None and not st.session_state.screen_re
         if df is None:
             continue
         buy_signal = check_buy_signal_today(df, params)
-        label = f"{'🎯 ' if buy_signal['confirmed'] else ''}{symbol} 詳細資料"
+        stock_label = f"{symbol} {get_stock_name(symbol)}".strip()
+        label = f"{'🎯 ' if buy_signal['confirmed'] else ''}{stock_label} 詳細資料"
         with st.expander(label, expanded=buy_signal["confirmed"]):
             if buy_signal["confirmed"]:
                 st.success(f"買進時機確立：{buy_signal['reason']}", icon="🎯")

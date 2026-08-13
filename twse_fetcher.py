@@ -35,6 +35,10 @@ import requests
 from sop_screener import DEFAULT_PARAMS, SOPParams, screen_stocks
 
 TWSE_STOCK_DAY_URL = "https://www.twse.com.tw/exchangeReport/STOCK_DAY"
+TWSE_STOCK_DAY_ALL_URL = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+
+# 股票代號 -> 股票名稱 對照表快取，同一次程式執行只打一次 API
+_stock_name_cache: dict[str, str] = {}
 
 
 def _roc_date_to_iso(roc_str: str) -> str:
@@ -54,6 +58,37 @@ def _recent_month_starts(months_back: int) -> list[str]:
         if m == 0:
             m, y = 12, y - 1
     return list(reversed(results))
+
+
+def fetch_stock_name_map(force_refresh: bool = False) -> dict[str, str]:
+    """
+    抓「上市股票代號 → 股票名稱」對照表。
+    透過 TWSE OpenAPI 一次抓全部上市股票的當日資訊，只取代號與名稱兩欄，
+    有做簡單的記憶體快取，同一次程式執行預設只打一次 API（除非 force_refresh=True）。
+    """
+    global _stock_name_cache
+    if _stock_name_cache and not force_refresh:
+        return _stock_name_cache
+
+    resp = requests.get(
+        TWSE_STOCK_DAY_ALL_URL,
+        timeout=10,
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+
+    name_map = {row["Code"]: row["Name"] for row in payload if row.get("Code") and row.get("Name")}
+    _stock_name_cache = name_map
+    return name_map
+
+
+def get_stock_name(stock_no: str) -> str:
+    """查詢股票代號對應的名稱；查不到（例如上櫃股、代號打錯）就回傳空字串。"""
+    try:
+        return fetch_stock_name_map().get(stock_no, "")
+    except Exception:
+        return ""
 
 
 def fetch_twse_month(
@@ -142,7 +177,9 @@ def fetch_and_screen(
     if not data:
         raise ValueError("所有股票代號都抓取失敗，沒有資料可供篩選")
 
-    return screen_stocks(data, params=params)
+    result = screen_stocks(data, params=params)
+    result.insert(1, "name", result["symbol"].map(get_stock_name).fillna(""))
+    return result
 
 
 if __name__ == "__main__":
