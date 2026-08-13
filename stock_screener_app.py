@@ -69,7 +69,8 @@ with st.sidebar:
 # ============================================================
 codes_input = st.text_input(
     "股票代號（僅上市股票，多檔用逗號分隔）",
-    value="2330, 2317, 2603",
+    value="",
+    placeholder="例如：2330, 2317, 2603",
 )
 run = st.button("🔍 開始篩選", type="primary")
 
