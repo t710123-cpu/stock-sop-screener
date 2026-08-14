@@ -139,6 +139,9 @@ hk_result = fetch_and_screen_hk(["0700", "9988", "3690"])  # 騰訊/阿里/美�
   API 有保證，遇到抓取失敗可重試
 - 股票名稱查詢（`get_yf_name`）需要額外的網路請求，比 TWSE 那邊的單次批次
   查詢慢一些，已做記憶體快取避免重複查
+- Yahoo Finance 對雲端/機房 IP（例如 Streamlit Community Cloud）常會擋名稱
+  查詢的 API（K線資料的端點通常不受影響），已改用 `curl_cffi` 模擬瀏覽器連線
+  繞過限制，`requirements.txt` 已加上這個依賴
 
 ## 圖形介面（不寫程式也能用）
 

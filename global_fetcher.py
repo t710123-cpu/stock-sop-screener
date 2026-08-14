@@ -18,16 +18,23 @@
 【注意事項】
 - yfinance 資料來源是 Yahoo Finance，非官方 API，穩定性與資料完整度不像
   TWSE 官方 API 那麼有保證，遇到抓取失敗可重試。
-- 股票名稱查詢（yf.Ticker(...).info）需要額外一次網路請求，比 TWSE 那邊的
-  單次批次查詢慢一些，已做記憶體快取避免重複查。
+- Yahoo Finance 對「雲端/機房 IP」（例如 Streamlit Community Cloud）常會擋查
+  股票名稱用的 API（歷史K線的端點通常還抓得到，名稱查詢的端點比較容易被擋），
+  導致部署到雲端後名稱查得到但顯示空白。這裡透過 curl_cffi 模擬瀏覽器連線
+  （impersonate="chrome"）繞過這個限制，本機與雲端都用同一個 session。
 """
 
 from __future__ import annotations
 
 import pandas as pd
 import yfinance as yf
+from curl_cffi import requests as cffi_requests
 
 from sop_screener import DEFAULT_PARAMS, SOPParams, screen_stocks
+
+# 模擬瀏覽器的連線 session，繞過 Yahoo Finance 對雲端/機房 IP 的封鎖。
+# 整個模組共用同一個 session，避免每次呼叫都重新建立連線。
+_SESSION = cffi_requests.Session(impersonate="chrome")
 
 # 股票代號 -> 股票名稱 對照表快取，同一次程式執行只查一次
 _name_cache: dict[str, str] = {}
@@ -50,21 +57,13 @@ def fetch_yf_ohlcv(ticker: str, months_back: int = 7) -> pd.DataFrame:
     （欄位: Date/Open/High/Low/Close/Volume）。查無資料會丟例外。
     """
     period_days = months_back * 31
-    df = yf.download(
-        ticker,
-        period=f"{period_days}d",
-        interval="1d",
-        progress=False,
-        auto_adjust=False,
-    )
+    t = yf.Ticker(ticker, session=_SESSION)
+    df = t.history(period=f"{period_days}d", interval="1d", auto_adjust=False)
     if df.empty:
         raise ValueError(f"{ticker} 抓不到任何資料，請確認代號是否正確")
 
-    # yfinance 新版對單一代號也可能回傳多層欄位(MultiIndex: Price x Ticker)，攤平成單層
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
     df = df.reset_index()
+    df = df.rename(columns={df.columns[0]: "Date"})  # 依市場不同可能叫 Date 或 Datetime
     df = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
     df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
     for c in ["Open", "High", "Low", "Close", "Volume"]:
@@ -78,7 +77,7 @@ def get_yf_name(ticker: str) -> str:
     if ticker in _name_cache:
         return _name_cache[ticker]
     try:
-        info = yf.Ticker(ticker).info
+        info = yf.Ticker(ticker, session=_SESSION).info
         name = info.get("longName") or info.get("shortName") or ""
     except Exception:
         name = ""
