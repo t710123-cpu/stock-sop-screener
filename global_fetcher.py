@@ -38,6 +38,8 @@ _SESSION = cffi_requests.Session(impersonate="chrome")
 
 # 股票代號 -> 股票名稱 對照表快取，同一次程式執行只查一次
 _name_cache: dict[str, str] = {}
+# 股票代號 -> 名稱查詢失敗原因，方便在畫面上直接顯示診斷訊息（不用翻雲端 log）
+_name_error_cache: dict[str, str] = {}
 
 
 def normalize_us_ticker(code: str) -> str:
@@ -73,16 +75,25 @@ def fetch_yf_ohlcv(ticker: str, months_back: int = 7) -> pd.DataFrame:
 
 
 def get_yf_name(ticker: str) -> str:
-    """查詢股票名稱（yfinance）；查不到就回傳空字串，不會拋例外。"""
+    """查詢股票名稱（yfinance）；查不到就回傳空字串，不會拋例外（失敗原因存進
+    _name_error_cache，用 get_yf_name_error() 查詢，方便畫面上直接顯示診斷訊息）。"""
     if ticker in _name_cache:
         return _name_cache[ticker]
     try:
         info = yf.Ticker(ticker, session=_SESSION).info
         name = info.get("longName") or info.get("shortName") or ""
-    except Exception:
+        if not name:
+            _name_error_cache[ticker] = "API 回傳成功但沒有名稱欄位（可能代號有誤）"
+    except Exception as e:
         name = ""
+        _name_error_cache[ticker] = f"{type(e).__name__}: {e}"
     _name_cache[ticker] = name
     return name
+
+
+def get_yf_name_error(ticker: str) -> str:
+    """查詢某代號上次 get_yf_name() 失敗的原因；成功查到名稱則回傳空字串。"""
+    return _name_error_cache.get(ticker, "")
 
 
 def _fetch_and_screen(

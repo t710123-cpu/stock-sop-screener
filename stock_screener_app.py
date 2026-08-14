@@ -29,6 +29,7 @@ from twse_fetcher import fetch_twse_ohlcv, get_stock_name as get_tw_name
 from global_fetcher import (
     fetch_yf_ohlcv,
     get_yf_name,
+    get_yf_name_error,
     normalize_hk_ticker,
     normalize_us_ticker,
 )
@@ -47,18 +48,21 @@ MARKETS = {
         "normalize": lambda s: s.strip(),
         "fetch": lambda code, months: fetch_twse_ohlcv(code, months_back=months),
         "name": get_tw_name,
+        "name_error": lambda code: "",
     },
     "美股 (US)": {
         "placeholder": "例如：AAPL, TSLA, NVDA",
         "normalize": normalize_us_ticker,
         "fetch": lambda code, months: fetch_yf_ohlcv(code, months_back=months),
         "name": get_yf_name,
+        "name_error": get_yf_name_error,
     },
     "港股 (HK)": {
         "placeholder": "例如：700, 9988, 3690（會自動補成 0700.HK 格式）",
         "normalize": normalize_hk_ticker,
         "fetch": lambda code, months: fetch_yf_ohlcv(code, months_back=months),
         "name": get_yf_name,
+        "name_error": get_yf_name_error,
     },
 }
 
@@ -112,6 +116,7 @@ if "screen_result" not in st.session_state:
     st.session_state.screen_result = None
     st.session_state.raw_data = {}
     st.session_state.name_fn = market["name"]
+    st.session_state.name_error_fn = market["name_error"]
 
 if run:
     stock_nos = [s.strip() for s in codes_input.split(",") if s.strip()]
@@ -119,6 +124,7 @@ if run:
         st.warning("請至少輸入一個股票代號")
     else:
         st.session_state.name_fn = market["name"]
+        st.session_state.name_error_fn = market["name_error"]
         progress = st.progress(0.0, text="準備開始抓取...")
         data: dict[str, pd.DataFrame] = {}
         errors: dict[str, str] = {}
@@ -176,6 +182,18 @@ if run:
 # ============================================================
 if st.session_state.screen_result is not None and not st.session_state.screen_result.empty:
     result_df = st.session_state.screen_result
+
+    # ---- 名稱查詢診斷：名稱空白時直接顯示失敗原因，不用翻雲端 log ----
+    name_errors = {
+        row["代號"]: st.session_state.name_error_fn(row["代號"])
+        for _, row in result_df.iterrows()
+        if not row["名稱"]
+    }
+    name_errors = {k: v for k, v in name_errors.items() if v}
+    if name_errors:
+        with st.expander("⚠️ 部分股票名稱查詢失敗，點此看原因", expanded=True):
+            for code, err in name_errors.items():
+                st.text(f"{code}：{err}")
 
     # ---- 今日買進訊號：最需要一眼看到的結論，獨立列在最上面 ----
     confirmed_today = result_df[result_df["今日買進訊號"]]
