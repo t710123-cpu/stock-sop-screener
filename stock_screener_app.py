@@ -1,12 +1,13 @@
 """
 選股紀律 SOP 篩選 —— Streamlit 圖形介面
 ==========================================
-把 sop_screener.py（篩選邏輯）+ twse_fetcher.py（TWSE 資料擷取）包成網頁介面。
-輸入股票代號（僅支援上市股票），按下按鈕即自動抓資料並跑完整套 SOP 篩選，
-結果用表格呈現，並可展開查看每檔股票的詳細過濾細節、回測日逐日檢查、K線走勢。
+把 sop_screener.py（篩選邏輯）+ twse_fetcher.py（台股）/ global_fetcher.py
+（美股、港股）包成網頁介面。選擇市場、輸入股票代號，按下按鈕即自動抓資料並
+跑完整套 SOP 篩選，結果用表格呈現，並可展開查看每檔股票的詳細過濾細節、
+回測日逐日檢查、K線走勢。
 
 【啟動方式】
-    pip install streamlit   （如尚未安裝，本機已確認裝好 1.59.1）
+    pip install streamlit yfinance   （如尚未安裝，本機已確認裝好）
     streamlit run stock_screener_app.py
 會自動開啟瀏覽器頁面（預設 http://localhost:8501）。
 """
@@ -24,12 +25,42 @@ from sop_screener import (
     check_valid_pullback,
     find_breakout_day,
 )
-from twse_fetcher import fetch_twse_ohlcv, get_stock_name
+from twse_fetcher import fetch_twse_ohlcv, get_stock_name as get_tw_name
+from global_fetcher import (
+    fetch_yf_ohlcv,
+    get_yf_name,
+    normalize_hk_ticker,
+    normalize_us_ticker,
+)
 
 st.set_page_config(page_title="選股紀律 SOP 篩選", page_icon="📈", layout="wide")
 
 st.title("📈 選股紀律 SOP 篩選")
 st.caption("均線多頭排列 + 量縮沉澱 + 底底高 → 三過濾候選股，並檢查有效回測日與停損價")
+
+# ============================================================
+# 市場設定：不同市場的代號正規化、抓資料、查名稱方式不同，統一包成一份設定
+# ============================================================
+MARKETS = {
+    "台股 (TWSE，僅上市)": {
+        "placeholder": "例如：2330, 2317, 2603",
+        "normalize": lambda s: s.strip(),
+        "fetch": lambda code, months: fetch_twse_ohlcv(code, months_back=months),
+        "name": get_tw_name,
+    },
+    "美股 (US)": {
+        "placeholder": "例如：AAPL, TSLA, NVDA",
+        "normalize": normalize_us_ticker,
+        "fetch": lambda code, months: fetch_yf_ohlcv(code, months_back=months),
+        "name": get_yf_name,
+    },
+    "港股 (HK)": {
+        "placeholder": "例如：700, 9988, 3690（會自動補成 0700.HK 格式）",
+        "normalize": normalize_hk_ticker,
+        "fetch": lambda code, months: fetch_yf_ohlcv(code, months_back=months),
+        "name": get_yf_name,
+    },
+}
 
 # ============================================================
 # 側邊欄：可調參數（對應 SOPParams，不用改程式碼即可調整紀律表數字）
@@ -67,29 +98,35 @@ with st.sidebar:
 # ============================================================
 # 主畫面：輸入區
 # ============================================================
+market_label = st.radio("市場", list(MARKETS.keys()), horizontal=True)
+market = MARKETS[market_label]
+
 codes_input = st.text_input(
-    "股票代號（僅上市股票，多檔用逗號分隔）",
+    "股票代號（多檔用逗號分隔）",
     value="",
-    placeholder="例如：2330, 2317, 2603",
+    placeholder=market["placeholder"],
 )
 run = st.button("🔍 開始篩選", type="primary")
 
 if "screen_result" not in st.session_state:
     st.session_state.screen_result = None
     st.session_state.raw_data = {}
+    st.session_state.name_fn = market["name"]
 
 if run:
     stock_nos = [s.strip() for s in codes_input.split(",") if s.strip()]
     if not stock_nos:
         st.warning("請至少輸入一個股票代號")
     else:
+        st.session_state.name_fn = market["name"]
         progress = st.progress(0.0, text="準備開始抓取...")
         data: dict[str, pd.DataFrame] = {}
         errors: dict[str, str] = {}
-        for i, stock_no in enumerate(stock_nos):
+        for i, raw_code in enumerate(stock_nos):
+            stock_no = market["normalize"](raw_code)
             progress.progress(i / len(stock_nos), text=f"抓取 {stock_no} 中...")
             try:
-                data[stock_no] = fetch_twse_ohlcv(stock_no, months_back=months_back)
+                data[stock_no] = market["fetch"](stock_no, months_back)
             except Exception as e:
                 errors[stock_no] = str(e)
         progress.progress(1.0, text="完成")
@@ -105,7 +142,7 @@ if run:
             stage1 = check_stage1_filters(df, params)
             row = {
                 "代號": symbol,
-                "名稱": get_stock_name(symbol),
+                "名稱": market["name"](symbol),
                 "第一關卡通過": stage1["stage1_pass"],
                 "均線多頭": stage1["filter1_trend_up"]["pass"],
                 "量縮沉澱": stage1["filter2_volume_consolidation"]["pass"],
@@ -175,7 +212,7 @@ if st.session_state.screen_result is not None and not st.session_state.screen_re
         if df is None:
             continue
         buy_signal = check_buy_signal_today(df, params)
-        stock_label = f"{symbol} {get_stock_name(symbol)}".strip()
+        stock_label = f"{symbol} {st.session_state.name_fn(symbol)}".strip()
         label = f"{'🎯 ' if buy_signal['confirmed'] else ''}{stock_label} 詳細資料"
         with st.expander(label, expanded=buy_signal["confirmed"]):
             if buy_signal["confirmed"]:

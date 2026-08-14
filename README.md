@@ -8,8 +8,10 @@
 
 - `sop_screener.py`：核心邏輯，所有函式與可調參數都在這裡
 - `example_usage.py`：用合成資料跑一遍完整流程的範例，可直接執行 `python3 example_usage.py` 查看效果
-- `twse_fetcher.py`：資料擷取層，串接台灣證交所（TWSE）公開 API，只要給股票代號
+- `twse_fetcher.py`：台股資料擷取層，串接台灣證交所（TWSE）公開 API，只要給股票代號
   就能自動抓歷史日K並直接跑完整套 SOP 篩選，不用自己準備 CSV（僅支援上市股票）
+- `global_fetcher.py`：美股／港股資料擷取層，透過 yfinance 抓歷史日K，用法與
+  `twse_fetcher.py` 對稱
 - `stock_screener_app.py`：Streamlit 網頁圖形介面，輸入股票代號、按按鈕即可看到
   篩選結果表格、逐檔詳細檢查、K線走勢圖、停損試算，不用寫程式碼
 
@@ -115,6 +117,29 @@ Streamlit 圖形介面（見下方）已經把這個判斷放在最顯眼的位�
 會直接列出「今天買進時機確立」的股票清單，結果表格也有獨立的「今日買進訊號」
 欄位，每檔股票展開後還能看到今天逐項條件的檢查明細。
 
+## 美股／港股（用 yfinance）
+
+```bash
+pip install yfinance   # 已確認本機裝有 1.5.1
+```
+
+```python
+from global_fetcher import fetch_and_screen_us, fetch_and_screen_hk
+
+us_result = fetch_and_screen_us(["AAPL", "TSLA", "NVDA"])
+hk_result = fetch_and_screen_hk(["0700", "9988", "3690"])  # 騰訊/阿里/美團
+```
+
+**代號格式**：
+- 美股直接用代號本身，如 `AAPL`（大小寫皆可）
+- 港股可輸入 `700` 或 `0700`，會自動補成 yfinance 需要的 `0700.HK` 格式
+
+**注意事項**：
+- 資料來源是 Yahoo Finance（非官方 API），穩定性與資料完整度不像 TWSE 官方
+  API 有保證，遇到抓取失敗可重試
+- 股票名稱查詢（`get_yf_name`）需要額外的網路請求，比 TWSE 那邊的單次批次
+  查詢慢一些，已做記憶體快取避免重複查
+
 ## 圖形介面（不寫程式也能用）
 
 ```bash
@@ -124,6 +149,8 @@ streamlit run stock_screener_app.py
 
 會自動開啟瀏覽器頁面（預設 `http://localhost:8501`），介面提供：
 
+- **市場選擇**：台股 (TWSE) / 美股 (US) / 港股 (HK)，切換後代號輸入框的提示文字
+  會跟著換
 - 股票代號輸入框（多檔用逗號分隔）+「開始篩選」按鈕
 - 側邊欄可調整所有 `SOPParams` 參數（月線/季線天數、量縮比例、回測窗口、停損%…），
   不用改程式碼
