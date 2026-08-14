@@ -18,13 +18,16 @@
 【注意事項】
 - yfinance 資料來源是 Yahoo Finance，非官方 API，穩定性與資料完整度不像
   TWSE 官方 API 那麼有保證，遇到抓取失敗可重試。
-- Yahoo Finance 對「雲端/機房 IP」（例如 Streamlit Community Cloud）常會擋查
-  股票名稱用的 API（歷史K線的端點通常還抓得到，名稱查詢的端點比較容易被擋），
-  導致部署到雲端後名稱查得到但顯示空白。這裡透過 curl_cffi 模擬瀏覽器連線
-  （impersonate="chrome"）繞過這個限制，本機與雲端都用同一個 session。
+- Yahoo Finance 對「雲端/機房 IP」（例如 Streamlit Community Cloud，很多使用者
+  共用同一批出口 IP）常會做流量限制（HTTP 429 / YFRateLimitError），短時間內
+  請求太密集就會被暫時擋、過一會兒又能用。這裡透過 curl_cffi 模擬瀏覽器連線
+  （impersonate="chrome"）降低被判定為機器人流量的機率，並對「Too Many
+  Requests」類型的錯誤自動重試（指數退避），減少單次請求撞到限流就直接失敗。
 """
 
 from __future__ import annotations
+
+import time
 
 import pandas as pd
 import yfinance as yf
@@ -32,7 +35,7 @@ from curl_cffi import requests as cffi_requests
 
 from sop_screener import DEFAULT_PARAMS, SOPParams, screen_stocks
 
-# 模擬瀏覽器的連線 session，繞過 Yahoo Finance 對雲端/機房 IP 的封鎖。
+# 模擬瀏覽器的連線 session，降低被 Yahoo Finance 判定為機器人流量的機率。
 # 整個模組共用同一個 session，避免每次呼叫都重新建立連線。
 _SESSION = cffi_requests.Session(impersonate="chrome")
 
@@ -40,6 +43,24 @@ _SESSION = cffi_requests.Session(impersonate="chrome")
 _name_cache: dict[str, str] = {}
 # 股票代號 -> 名稱查詢失敗原因，方便在畫面上直接顯示診斷訊息（不用翻雲端 log）
 _name_error_cache: dict[str, str] = {}
+
+
+def _call_with_retry(fn, max_retries: int = 3, base_delay: float = 3.0):
+    """
+    執行 fn()，遇到「流量限制」類型的錯誤時自動重試（指數退避：3s, 6s, 12s...）。
+    其他類型的錯誤（代號打錯、查無資料等）不重試，直接往外拋出。
+    """
+    last_err = None
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            is_rate_limit = "rate limit" in str(e).lower() or "too many requests" in str(e).lower()
+            last_err = e
+            if not is_rate_limit or attempt == max_retries:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
+    raise last_err  # 理論上不會走到這裡
 
 
 def normalize_us_ticker(code: str) -> str:
@@ -60,7 +81,7 @@ def fetch_yf_ohlcv(ticker: str, months_back: int = 7) -> pd.DataFrame:
     """
     period_days = months_back * 31
     t = yf.Ticker(ticker, session=_SESSION)
-    df = t.history(period=f"{period_days}d", interval="1d", auto_adjust=False)
+    df = _call_with_retry(lambda: t.history(period=f"{period_days}d", interval="1d", auto_adjust=False))
     if df.empty:
         raise ValueError(f"{ticker} 抓不到任何資料，請確認代號是否正確")
 
@@ -80,7 +101,7 @@ def get_yf_name(ticker: str) -> str:
     if ticker in _name_cache:
         return _name_cache[ticker]
     try:
-        info = yf.Ticker(ticker, session=_SESSION).info
+        info = _call_with_retry(lambda: yf.Ticker(ticker, session=_SESSION).info)
         name = info.get("longName") or info.get("shortName") or ""
         if not name:
             _name_error_cache[ticker] = "API 回傳成功但沒有名稱欄位（可能代號有誤）"
@@ -101,14 +122,17 @@ def _fetch_and_screen(
     normalize_fn,
     months_back: int,
     params: SOPParams,
+    pause_sec: float = 1.0,
 ) -> pd.DataFrame:
     data = {}
-    for raw in tickers:
+    for i, raw in enumerate(tickers):
         ticker = normalize_fn(raw)
         try:
             data[ticker] = fetch_yf_ohlcv(ticker, months_back=months_back)
         except Exception as e:
             print(f"[警告] {ticker} 抓取失敗，已跳過：{e}")
+        if i < len(tickers) - 1:
+            time.sleep(pause_sec)  # 避免短時間內連續發請求，降低觸發流量限制的機率
 
     if not data:
         raise ValueError("所有股票代號都抓取失敗，沒有資料可供篩選")

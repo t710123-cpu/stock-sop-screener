@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pandas as pd
 import streamlit as st
 
@@ -135,6 +137,8 @@ if run:
                 data[stock_no] = market["fetch"](stock_no, months_back)
             except Exception as e:
                 errors[stock_no] = str(e)
+            if i < len(stock_nos) - 1:
+                time.sleep(1.0)  # 避免連續請求太密集觸發 Yahoo Finance 流量限制
         progress.progress(1.0, text="完成")
         progress.empty()
 
